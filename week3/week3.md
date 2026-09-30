@@ -181,6 +181,220 @@ Task 1에서 사용한 구 형태의 3D 모델을 바탕으로 서로 다른 표
 
 처음에는 색의 변화만 있어서 행성 표면이 매끈하게 보였습니다. 이를 보완하기 위해 노이즈로 높낮이 값을 만들고 주변 값의 차이로 법선을 변화시켜 실제 구의 메시를 크게 변형하지 않고도 빛을 받는 방향에 차이가 생기도록 수정했습니다. 그 결과 이전보다 표면의 밝기가 불규칙하게 나타나면서 거친 얼음 표면처럼 보이게 했습니다.
 
+**사용한 프래그먼트 셰이더**
+
+```glsl
+#version 300 es
+
+precision highp float;
+
+in vec3 vColor;
+in vec3 vNormal;
+in vec3 vSurf;
+
+uniform float uTime;
+uniform mat4 uModel;
+
+out vec4 fragColor;
+
+// 같은 위치에서는 항상 같은 랜덤값을 만든다
+float hash31(vec3 p) {
+  return fract(
+    sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453
+  );
+}
+
+// 주변 값을 부드럽게 섞어 자연스러운 높이 변화를 만든다
+float noise3(vec3 p) {
+  vec3 cell = floor(p);
+  vec3 f = fract(p);
+
+  f = f * f * (3.0 - 2.0 * f);
+
+  float n000 = hash31(cell);
+  float n100 = hash31(cell + vec3(1.0, 0.0, 0.0));
+  float n010 = hash31(cell + vec3(0.0, 1.0, 0.0));
+  float n110 = hash31(cell + vec3(1.0, 1.0, 0.0));
+
+  float n001 = hash31(cell + vec3(0.0, 0.0, 1.0));
+  float n101 = hash31(cell + vec3(1.0, 0.0, 1.0));
+  float n011 = hash31(cell + vec3(0.0, 1.0, 1.0));
+  float n111 = hash31(cell + vec3(1.0, 1.0, 1.0));
+
+  float lower = mix(
+    mix(n000, n100, f.x),
+    mix(n010, n110, f.x),
+    f.y
+  );
+
+  float upper = mix(
+    mix(n001, n101, f.x),
+    mix(n011, n111, f.x),
+    f.y
+  );
+
+  return mix(lower, upper, f.z);
+}
+
+// 얼음 표면의 높낮이를 만든다
+float iceHeight(vec3 S) {
+
+  // 큰 얼음 덩어리
+  float broad = noise3(
+    S * 3.2
+  );
+
+  // 중간 크기의 울퉁불퉁함
+  float medium = noise3(
+    S * 7.0 + vec3(4.3, 1.7, 8.1)
+  );
+
+  // 작은 얼음 결
+  float detail = noise3(
+    S * 18.0 + vec3(7.4, 5.2, 2.8)
+  );
+
+  // 아주 자잘한 거친 표면
+  float micro = noise3(
+    S * 34.0 + vec3(3.1, 9.2, 6.7)
+  );
+
+  float height =
+      broad  * 0.46
+    + medium * 0.27
+    + detail * 0.18
+    + micro  * 0.09;
+
+  // 일부 영역을 살짝 움푹 들어가게 만든다
+  float dent = smoothstep(
+    0.72,
+    0.88,
+    noise3(
+      S * 4.0 + vec3(2.8, 7.3, 5.1)
+    )
+  );
+
+  height -= dent * 0.15;
+
+  return height;
+}
+
+void main() {
+  // 행성 자체 좌표
+  vec3 S = normalize(vSurf);
+
+  // 얼음 표면의 울퉁불퉁한 높이를 계산한다
+  float height = iceHeight(S);
+
+  // 가상의 표면 위치를 만든다
+  vec3 displacedSurface =
+    S * (
+      1.0
+      + (height - 0.5) * 0.075
+    );
+
+  // 화면상의 주변 픽셀과의 차이를 구한다
+  vec3 dx = dFdx(displacedSurface);
+  vec3 dy = dFdy(displacedSurface);
+
+  // 두 방향의 기울기로 새로운 법선을 만든다
+  vec3 roughNormal =
+    normalize(cross(dx, dy));
+
+  // 법선이 구 안쪽을 바라보게 되는 경우 방향을 뒤집는다
+  if (dot(roughNormal, S) < 0.0) {
+    roughNormal = -roughNormal;
+  }
+
+  // 원래 구 법선과 새 법선을 조금 섞는다
+  vec3 localNormal = normalize(
+    mix(
+      S,
+      roughNormal,
+      0.70
+    )
+  );
+
+  // 행성이 회전하면 울퉁불퉁한 표면도 함께 회전한다
+  vec3 N = normalize(
+    mat3(uModel) * localNormal
+  );
+
+  // 빛을 받는 정도
+  vec3 L = normalize(
+    vec3(-1.0, 0.3, 0.5)
+  );
+
+  float diff = max(
+    dot(N, L),
+    0.0
+  );
+
+  // 서로 다른 방향의 물결을 섞어 얼음 무늬를 만든다
+  float pattern = sin(
+    S.x * 12.0
+    + sin(S.y * 9.0) * 2.0
+    + sin(S.z * 11.0) * 2.0
+  );
+
+  // 무늬 값이 높은 부분을 밝은 얼음으로 표현한다
+  float ice = smoothstep(-0.2, 0.5, pattern);
+
+  vec3 deepBlue = vec3(0.04, 0.16, 0.32);
+  vec3 iceBlue = vec3(0.65, 0.90, 0.98);
+  vec3 surfaceColor = mix(deepBlue, iceBlue, ice);
+
+  // 얼음 경계가 일정하지 않도록 작은 굴곡을 넣는다
+  float iceEdge =
+      abs(S.y)
+      + 0.06 * sin(S.x * 10.0) * sin(S.z * 8.0);
+
+  // 넓은 구간에 걸쳐 서서히 얼음색으로 바꾼다
+  float polarIce = smoothstep(0.45, 0.98, iceEdge);
+
+  // 연한 파란색을 섞고, 기존 표면 무늬도 조금 남긴다
+  surfaceColor = mix(
+    surfaceColor,
+    vec3(0.72, 0.88, 0.94),
+    polarIce * 0.65
+  );
+
+  // 극의 끝부분으로 갈수록 흰색을 더 강하게 섞는다
+  float polarTip = smoothstep(0.65, 0.99, abs(S.y));
+
+  surfaceColor = mix(
+    surfaceColor,
+    vec3(0.96, 0.98, 1.0),
+    polarTip * 0.9
+  );
+
+  // 표면의 밝고 어두운 면을 계산한다
+  vec3 color = surfaceColor * (0.15 + 0.85 * diff);
+
+  // 시간이 지나면서 빛의 띠가 조금씩 굽이치도록 한다
+  float auroraCenter =
+     0.72
+     + 0.06 * sin(S.x * 8.0 + uTime * 0.7)
+     + 0.04 * sin(S.z * 10.0 - uTime * 0.5);
+
+  // 극지방 근처의 좁은 구간에 부드러운 빛의 띠를 만든다
+  float aurora = 1.0 - smoothstep(
+    0.02,
+    0.10,
+    abs(abs(S.y) - auroraCenter)
+  );
+
+  // 빛의 세기도 천천히 변하게 한다
+  float shimmer =
+    0.65 + 0.35 * sin(S.x * 15.0 + S.z * 12.0 + uTime);
+
+  // 청록색 빛을 더한다
+  color += vec3(0.08, 0.80, 0.55) * aurora * shimmer * 0.45;
+
+  fragColor = vec4(color, 1.0);
+}
+```
+
 <br>
 
 ### 3. 벚꽃 행성
@@ -190,6 +404,283 @@ Task 1에서 사용한 구 형태의 3D 모델을 바탕으로 서로 다른 표
 표면에는 벚꽃잎 모양을 추가했습니다. 행성 전체에 꽃잎의 중심점을 나누어 배치하고 각 중심에서 접선 방향을 구해 꽃잎 모양을 그렸습니다. 꽃잎의 크기와 색은 조금씩 다르게 하고 가장자리로 갈수록 색을 연하게 섞어 단색으로 붙어 있는 느낌을 줄였습니다.
 
 꽃잎의 방향은 각 꽃잎마다 서로 다른 고정 각도를 사용했습니다. 따라서 행성 자체는 계속 자전하지만 꽃잎의 방향이 시간에 따라 따로 회전하지 않고 행성 표면에 붙어 있는 무늬처럼 함께 움직입니다.
+
+**사용한 프래그먼트 셰이더**
+
+```glsl
+#version 300 es
+
+precision highp float;
+
+in vec3 vNormal;
+in vec3 vSurf;
+
+uniform float uTime;
+uniform mat4 uModel;
+
+out vec4 fragColor;
+
+// 같은 위치에서 항상 같은 값을 만든다
+float hash31(vec3 p) {
+  return fract(
+    sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453
+  );
+}
+
+// 주변 여덟 지점의 값을 부드럽게 섞는다
+float noise3(vec3 p) {
+  vec3 cell = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+
+  float lower = mix(
+    mix(
+      hash31(cell),
+      hash31(cell + vec3(1.0, 0.0, 0.0)),
+      f.x
+    ),
+    mix(
+      hash31(cell + vec3(0.0, 1.0, 0.0)),
+      hash31(cell + vec3(1.0, 1.0, 0.0)),
+      f.x
+    ),
+    f.y
+  );
+
+  float upper = mix(
+    mix(
+      hash31(cell + vec3(0.0, 0.0, 1.0)),
+      hash31(cell + vec3(1.0, 0.0, 1.0)),
+      f.x
+    ),
+    mix(
+      hash31(cell + vec3(0.0, 1.0, 1.0)),
+      hash31(cell + vec3(1.0, 1.0, 1.0)),
+      f.x
+    ),
+    f.y
+  );
+
+  return mix(lower, upper, f.z);
+}
+
+// 잔결 없이 부드러운 꽃 덩어리의 높이를 만든다
+float blossomHeight(vec3 p) {
+  float broad = noise3(p);
+  float softDetail = noise3(p * 1.8 + vec3(5.2, 1.3, 7.1));
+
+  // 큰 형태가 대부분을 차지하고 작은 변화는 조금만 섞는다
+  float h = broad * 0.88 + softDetail * 0.12;
+
+  return smoothstep(0.25, 0.75, h);
+}
+
+// 구 표면에 꽃잎을 성기게 배치한다
+vec3 addPetals(vec3 baseColor, vec3 S) {
+  vec3 result = baseColor;
+
+  // 각 꽃잎마다 고정된 회전 각도
+  const float petalAngles[22] = float[22](
+    0.139626,
+    5.532694,
+    1.605703,
+    3.961897,
+    0.314159,
+    5.934119,
+    1.954769,
+    4.328417,
+    0.575959,
+    5.742133,
+    1.762783,
+    4.502949,
+    0.052360,
+    6.126106,
+    2.164208,
+    4.118977,
+    0.715585,
+    5.846853,
+    2.024582,
+    4.677482,
+    0.453786,
+    5.462881
+  );
+
+  // 행성 전체에 꽃잎 22장: 화면에는 그중 일부만 보인다
+  for (int i = 0; i < 22; i++) {
+    float id = float(i);
+
+    // 꽃잎마다 다른 위치와 크기를 정한다
+    float r1 = hash31(vec3(id, 2.7, 9.1));
+    float r3 = hash31(vec3(id, 5.2, 1.8));
+
+    // 구 전체에 중심점을 분산시킨다
+    float y = 1.0 - 2.0 * (id + 0.5) / 22.0;
+    float angle = id * 2.399963
+        + (r1 - 0.5) * 0.5;
+
+    float ring = sqrt(max(1.0 - y * y, 0.0));
+
+    vec3 center = vec3(
+      ring * cos(angle),
+      y,
+      ring * sin(angle)
+    );
+
+    // 각 꽃잎 중심에서 표면을 따라 가로·세로 방향을 만든다
+    vec3 reference = abs(center.y) > 0.9
+        ? vec3(1.0, 0.0, 0.0)
+        : vec3(0.0, 1.0, 0.0);
+
+    vec3 tangent = normalize(cross(reference, center));
+    vec3 bitangent = cross(center, tangent);
+
+    vec3 delta = S - center;
+    vec2 q = vec2(
+      dot(delta, tangent),
+      dot(delta, bitangent)
+    );
+
+    // 꽃잎마다 서로 다른 고정 방향을 사용한다
+    float rotation = petalAngles[i];
+
+    float c = cos(rotation);
+    float s = sin(rotation);
+
+    q = vec2(
+      c * q.x + s * q.y,
+      -s * q.x + c * q.y
+    );
+
+    // 폭과 길이를 다르게 해 납작한 꽃잎 모양을 만든다
+    float size = mix(0.8, 1.2, r3);
+    q /= vec2(0.10, 0.17) * size;
+
+    // 아래쪽은 좁고 위쪽은 조금 넓은 둥근 형태
+    float width = 0.72 + 0.20 * clamp(q.y, -1.0, 1.0);
+    float outline = length(vec2(q.x / width, q.y));
+
+    // 화면 크기에 맞춰 가장자리를 부드럽게 한다
+    float aa = max(fwidth(outline), 0.025);
+    float petal = 1.0 - smoothstep(
+      1.0 - aa,
+      1.0 + aa,
+      outline
+    );
+
+    // 위 끝부분에 작은 홈을 내 벚꽃 꽃잎의 특징을 준다
+    float notchDistance = length(q - vec2(0.0, 0.98));
+    float notchAA = max(fwidth(notchDistance), 0.015);
+
+    petal *= smoothstep(
+      0.18 - notchAA,
+      0.18 + notchAA,
+      notchDistance
+    );
+
+    // 구 반대편에 같은 무늬가 생기지 않도록 제한한다
+    petal *= step(0.95, dot(S, center));
+
+    // 꽃잎마다 연분홍과 우윳빛 사이의 색을 고른다
+    vec3 petalColor = mix(
+      vec3(0.86, 0.34, 0.52),
+      vec3(0.98, 0.58, 0.72),
+      r1
+    );
+
+    // 가장자리로 갈수록 더 연하게 만든다
+    float edgeFade = smoothstep(0.15, 0.95, outline);
+    petalColor = mix(
+      petalColor,
+      vec3(1.0, 0.92, 0.93),
+      edgeFade * 0.45
+    );
+
+    // 꽃잎 아래쪽에는 분홍색을 조금 더 남긴다
+    float rootTint = 1.0 - smoothstep(-0.8, 0.3, q.y);
+    petalColor = mix(
+      petalColor,
+      vec3(0.94, 0.48, 0.65),
+      rootTint * 0.25
+    );
+
+    // 너무 진하게 찍히지 않도록 꽃잎마다 농도를 약간 다르게 준다
+    float petalOpacity = mix(0.32, 0.48, r3);
+    result = mix(result, petalColor, petal * petalOpacity);
+  }
+
+  return result;
+}
+
+void main() {
+  vec3 S = normalize(vSurf);
+
+  // 작은 얼룩 대신 비교적 큰 덩어리를 만든다
+  // 시간에 따라 아주 천천히 흐르게 한다
+  vec3 p = S * 5.0
+      + vec3(uTime * 0.018, uTime * 0.006, 0.0);
+
+  float height = blossomHeight(p);
+
+  // 꽃 덩어리 사이도 너무 어둡지 않은 분홍색으로 표현한다
+  vec3 betweenPink = vec3(0.92, 0.66, 0.75);
+  vec3 blossomPink = vec3(1.0, 0.82, 0.88);
+  vec3 ivoryPink = vec3(1.0, 0.94, 0.94);
+
+  // 낮은 부분에서 연분홍으로 비교적 일찍 바뀌게 한다
+  float pinkArea = smoothstep(0.10, 0.45, height);
+  vec3 surfaceColor = mix(
+    betweenPink,
+    blossomPink,
+    pinkArea
+  );
+
+  // 덩어리의 높은 부분에는 우윳빛 색을 넓게 섞는다
+  float paleArea = smoothstep(0.38, 0.78, height);
+  surfaceColor = mix(
+    surfaceColor,
+    ivoryPink,
+    paleArea
+  );
+
+  // 바탕색 위에 꽃잎 무늬를 얹는다
+  surfaceColor = addPetals(surfaceColor, S);
+
+  // 주변 높이를 비교해 큰 덩어리의 기울기를 구한다
+  float e = 0.025;
+
+  vec3 slope = vec3(
+    blossomHeight(p + vec3(e, 0.0, 0.0))
+      - blossomHeight(p - vec3(e, 0.0, 0.0)),
+
+    blossomHeight(p + vec3(0.0, e, 0.0))
+      - blossomHeight(p - vec3(0.0, e, 0.0)),
+
+    blossomHeight(p + vec3(0.0, 0.0, e))
+      - blossomHeight(p - vec3(0.0, 0.0, e))
+  ) / (2.0 * e);
+
+  // 구 표면을 따라 변하는 기울기만 남긴다
+  vec3 surfaceSlope = slope - S * dot(slope, S);
+
+  // 잔결이 아닌 큰 덩어리에 완만한 요철을 준다
+  float bumpStrength = 0.04;
+  vec3 localNormal = normalize(
+    S - bumpStrength * surfaceSlope
+  );
+
+  // 행성이 회전할 때 요철의 방향도 함께 회전한다
+  vec3 bumpedNormal = normalize(
+    mat3(uModel) * localNormal
+  );
+
+  // 밝은 쪽과 어두운 쪽을 유지한다
+  vec3 L = normalize(vec3(-1.0, 0.3, 0.5));
+  float diff = max(dot(bumpedNormal, L), 0.0);
+
+  vec3 color = surfaceColor * (0.22 + 0.78 * diff);
+  fragColor = vec4(color, 1.0);
+}
+```
 
 <br>
 
