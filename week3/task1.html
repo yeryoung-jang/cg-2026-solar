@@ -143,7 +143,6 @@ layout(location=0) in vec3 aPos;      // 정점 위치 버퍼에서 들어온다
 layout(location=1) in vec3 aNormal;   // 법선 버퍼
 layout(location=3) in vec3 aColor;    // 정점 색 버퍼
 
-uniform float uTime;                  // 초 단위 시간 — 모든 정점이 같은 값을 받는다
 uniform mat4 uModel;
 uniform mat4 uViewProj;
 
@@ -231,7 +230,6 @@ function createProgram(vsSource, fsSource) {
 const program = createProgram(VS_SOURCE, FS_SOURCE);
 
 // uniform 의 "위치"를 이름으로 찾아 둔다. 매 프레임 찾으면 느리다.
-const uTimeLoc = gl.getUniformLocation(program, 'uTime');
 const uModelLoc = gl.getUniformLocation(program, 'uModel');
 const uViewProjLoc = gl.getUniformLocation(program, 'uViewProj');
 
@@ -289,19 +287,6 @@ M4.rotateY = function (angle) {
     c, 0, -s, 0,
     0, 1, 0, 0,
     s, 0, c, 0,
-    0, 0, 0, 1,
-  ]);
-};
-
-// z축 회전
-M4.rotateZ = function (angle) {
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
-
-  return new Float32Array([
-    c, s, 0, 0,
-    -s, c, 0, 0,
-    0, 0, 1, 0,
     0, 0, 0, 1,
   ]);
 };
@@ -418,7 +403,6 @@ function render() {
 
   // 사용할 셰이더 프로그램을 선택한 뒤 값을 전달한다
   gl.useProgram(program);
-  gl.uniform1f(uTimeLoc, time);
   gl.uniformMatrix4fv(uViewProjLoc, false, viewProj);
 
   // ── 바닥 그리기 ──

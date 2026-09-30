@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3주차 실습 1 — 출발점</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f16; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="glcanvas"></canvas>
+
+<script>
+/* ============================================================================
+   3주차 실습 1 — 출발점 파일
+
+   삼각형 하나를 그리는 가장 작은 WebGL2 프로그램입니다.
+   이 파일 하나에 세 개의 프로그램이 모두 들어 있습니다.
+
+     ① 메인 애플리케이션 — 이 <script> 안의 JavaScript (CPU 에서 실행)
+     ② 버텍스 셰이더    — 아래 VS_SOURCE 문자열     (GPU 에서 실행)
+     ③ 프래그먼트 셰이더 — 아래 FS_SOURCE 문자열     (GPU 에서 실행)
+
+   강의 자료의 「실습 1」 을 보며 단계별로 고쳐 나가면 됩니다.
+   ============================================================================ */
+'use strict';
+
+/* ══════════════════════════════════════════════════════════════════════════
+   1. 메시 데이터 — 이 숫자들이 전부입니다
+   ──────────────────────────────────────────────────────────────────────────
+   각 버퍼의 "같은 번째" 값이 같은 정점의 정보입니다.
+   예를 들어 정점 0 은 위치 (-0.75,-0.55,0), 법선 (0,0,1), 색 (0.92,0.35,0.32).
+   ══════════════════════════════════════════════════════════════════════════ */
+// 공 만들기: 반지름, 위도·경도 분할 수, RGB 색을 받는다
+function makeSphere(radius, rows, cols, red, green, blue) {
+  const positions = [];
+  const normals = [];
+  const colors = [];
+  const indices = [];
+
+  // 위도와 경도를 따라 구 표면의 점들을 만든다
+  for (let i = 0; i <= rows; i++) {
+    const phi = Math.PI * i / rows;
+
+    for (let j = 0; j <= cols; j++) {
+      const theta = 2 * Math.PI * j / cols;
+
+      const nx = Math.sin(phi) * Math.cos(theta);
+      const ny = Math.cos(phi);
+      const nz = Math.sin(phi) * Math.sin(theta);
+
+      positions.push(nx * radius, ny * radius, nz * radius);
+      normals.push(nx, ny, nz);
+
+      // 경도에 따라 밝기를 달리해 나중에 자전이 보이도록 한다
+      const shade = 0.70 + 0.30 * Math.abs(Math.cos(theta * 2.0));
+      colors.push(red * shade, green * shade, blue * shade);
+    }
+  }
+
+  // 이웃한 격자점 네 개를 삼각형 두 개로 연결한다
+  const stride = cols + 1;
+
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      const topLeft = i * stride + j;
+      const topRight = topLeft + 1;
+      const bottomLeft = topLeft + stride;
+      const bottomRight = bottomLeft + 1;
+
+      indices.push(topLeft, bottomLeft, topRight);
+      indices.push(topRight, bottomLeft, bottomRight);
+    }
+  }
+
+  return {
+    positions: new Float32Array(positions),
+    normals: new Float32Array(normals),
+    colors: new Float32Array(colors),
+    indices: new Uint16Array(indices),
+  };
+}
+/* ══════════════════════════════════════════════════════════════════════════
+   2. 버텍스 셰이더 — 정점 하나마다 한 번씩 실행됩니다
+   ══════════════════════════════════════════════════════════════════════════ */
+const VS_SOURCE = `#version 300 es
+
+layout(location=0) in vec3 aPos;      // 정점 위치 버퍼에서 들어온다
+layout(location=1) in vec3 aNormal;   // 법선 버퍼
+layout(location=3) in vec3 aColor;    // 정점 색 버퍼
+
+uniform float uTime;                  // 초 단위 시간 — 모든 정점이 같은 값을 받는다
+uniform mat4 uModel;
+uniform mat4 uViewProj;
+
+out vec3 vColor;                      // 프래그먼트 셰이더로 넘길 값
+out vec3 vNormal;
+out vec3 vSurf;
+
+void main() {
+  vColor  = aColor;
+  
+  // 물체가 회전하면 표면이 향하는 방향도 함께 회전한다
+  vNormal = mat3(uModel) * aNormal;
+  vSurf = aNormal;
+
+  // gl_Position 에 넣는 값이 그 정점의 최종 위치(NDC)입니다.
+  // 물체 배치 → 카메라와 투영 변환
+  gl_Position = uViewProj * uModel * vec4(aPos, 1.0);
+}
+`;
+
+/* ══════════════════════════════════════════════════════════════════════════
+   3. 프래그먼트 셰이더 — 픽셀 하나마다 한 번씩 실행됩니다
+   ══════════════════════════════════════════════════════════════════════════ */
+// 얼음 행성 프래그먼트 셰이더
+const FS_ICE_SOURCE = `#version 300 es
+precision highp float;
+
+in vec3 vColor;
+in vec3 vNormal;
+in vec3 vSurf;
+
+uniform float uTime;
+uniform mat4 uModel;
+out vec4 fragColor;
+
+// 같은 위치에서는 항상 같은 랜덤값을 만든다
+float hash31(vec3 p) {
+  return fract(
+    sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453
+  );
+}
+
+
+// 주변 값을 부드럽게 섞어 자연스러운 높이 변화를 만든다
+float noise3(vec3 p) {
+  vec3 cell = floor(p);
+  vec3 f = fract(p);
+
+  f = f * f * (3.0 - 2.0 * f);
+
+  float n000 = hash31(cell);
+  float n100 = hash31(cell + vec3(1.0, 0.0, 0.0));
+  float n010 = hash31(cell + vec3(0.0, 1.0, 0.0));
+  float n110 = hash31(cell + vec3(1.0, 1.0, 0.0));
+
+  float n001 = hash31(cell + vec3(0.0, 0.0, 1.0));
+  float n101 = hash31(cell + vec3(1.0, 0.0, 1.0));
+  float n011 = hash31(cell + vec3(0.0, 1.0, 1.0));
+  float n111 = hash31(cell + vec3(1.0, 1.0, 1.0));
+
+  float lower = mix(
+    mix(n000, n100, f.x),
+    mix(n010, n110, f.x),
+    f.y
+  );
+
+  float upper = mix(
+    mix(n001, n101, f.x),
+    mix(n011, n111, f.x),
+    f.y
+  );
+
+  return mix(lower, upper, f.z);
+}
+
+
+// 얼음 표면의 높낮이를 만든다
+float iceHeight(vec3 S) {
+
+  float broad = noise3(
+    S * 3.2
+  );
+
+  float medium = noise3(
+    S * 7.0 + vec3(4.3, 1.7, 8.1)
+  );
+
+  float detail = noise3(
+    S * 18.0 + vec3(7.4, 5.2, 2.8)
+  );
+
+  float micro = noise3(
+    S * 34.0 + vec3(3.1, 9.2, 6.7)
+  );
+
+  float height =
+      broad  * 0.46
+    + medium * 0.27
+    + detail * 0.18
+    + micro  * 0.09;
+
+
+  // 일부 영역을 살짝 움푹 들어가게 만든다
+  float dent = smoothstep(
+    0.72,
+    0.88,
+    noise3(
+      S * 4.0 + vec3(2.8, 7.3, 5.1)
+    )
+  );
+
+  height -= dent * 0.15;
+
+  return height;
+}
+
+void main() {
+  vec3 S = normalize(vSurf);
+
+
+  // ─────────────────────────────
+  // 얼음 표면의 울퉁불퉁한 높이를 계산한다
+  // ─────────────────────────────
+
+  float height = iceHeight(S);
+
+
+  // 법선 계산을 위해 높이값을 반영한 가상 표면 위치를 만든다
+  vec3 displacedSurface =
+    S * (
+      1.0
+      + (height - 0.5) * 0.075
+    );
+
+
+  // 화면상의 주변 픽셀과의 차이를 구한다
+  vec3 dx = dFdx(displacedSurface);
+  vec3 dy = dFdy(displacedSurface);
+
+
+  // 두 방향의 기울기로 새로운 법선을 만든다
+  vec3 roughNormal =
+    normalize(cross(dx, dy));
+
+
+  // 법선이 구 안쪽을 바라보게 되는 경우 방향을 뒤집는다
+  if (dot(roughNormal, S) < 0.0) {
+    roughNormal = -roughNormal;
+  }
+
+
+  // 원래 구 법선과 새 법선을 섞어 요철 강도를 조절한다
+  vec3 localNormal = normalize(
+    mix(
+      S,
+      roughNormal,
+      0.70
+    )
+  );
+
+
+  // 행성이 회전하면 울퉁불퉁한 표면도 함께 회전한다
+  vec3 N = normalize(
+    mat3(uModel) * localNormal
+  );
+
+  vec3 L = normalize(
+    vec3(-1.0, 0.3, 0.5)
+  );
+
+  float diff = max(
+    dot(N, L),
+    0.0
+  );
+
+  // 서로 다른 방향의 물결을 섞어 얼음 무늬를 만든다
+  float pattern = sin(
+    S.x * 12.0
+    + sin(S.y * 9.0) * 2.0
+    + sin(S.z * 11.0) * 2.0
+  );
+
+  // 무늬 값이 높은 부분을 밝은 얼음으로 표현한다
+  float ice = smoothstep(-0.2, 0.5, pattern);
+
+  vec3 deepBlue = vec3(0.04, 0.16, 0.32);
+  vec3 iceBlue = vec3(0.65, 0.90, 0.98);
+  vec3 surfaceColor = mix(deepBlue, iceBlue, ice);
+
+  // 극지방 경계가 일직선이 되지 않도록 굴곡을 준다
+  float iceEdge =
+      abs(S.y)
+      + 0.06 * sin(S.x * 10.0) * sin(S.z * 8.0);
+
+  float polarIce = smoothstep(0.45, 0.98, iceEdge);
+
+  // 연한 파란색을 섞고 기존 표면 무늬도 조금 남긴다
+  surfaceColor = mix(
+    surfaceColor,
+    vec3(0.72, 0.88, 0.94),
+    polarIce * 0.65
+  );
+
+  // 극의 끝부분으로 갈수록 흰색을 더 강하게 섞는다
+  float polarTip = smoothstep(0.65, 0.99, abs(S.y));
+
+  surfaceColor = mix(
+    surfaceColor,
+    vec3(0.96, 0.98, 1.0),
+    polarTip * 0.9
+  );
+
+  vec3 color = surfaceColor * (0.15 + 0.85 * diff);
+
+  // 시간이 지나면서 빛의 띠가 조금씩 굽이치도록 한다
+  float auroraCenter =
+     0.72
+     + 0.06 * sin(S.x * 8.0 + uTime * 0.7)
+     + 0.04 * sin(S.z * 10.0 - uTime * 0.5);
+
+  // 극지방 근처의 좁은 구간에 부드러운 빛의 띠를 만든다
+  float aurora = 1.0 - smoothstep(
+    0.02,
+    0.10,
+    abs(abs(S.y) - auroraCenter)
+  );
+
+  // 빛의 세기도 천천히 변하게 한다
+  float shimmer =
+    0.65 + 0.35 * sin(S.x * 15.0 + S.z * 12.0 + uTime);
+
+  // 청록색 빛을 더한다
+  color += vec3(0.08, 0.80, 0.55) * aurora * shimmer * 0.45;
+
+  fragColor = vec4(color, 1.0);
+}
+`;
+
+// 벚꽃 행성 프래그먼트 셰이더
+const FS_BLOSSOM_SOURCE = `#version 300 es
+precision highp float;
+
+in vec3 vNormal;
+in vec3 vSurf;
+
+uniform float uTime;
+uniform mat4 uModel;
+out vec4 fragColor;
+
+// 같은 위치에서 항상 같은 값을 만든다
+float hash31(vec3 p) {
+  return fract(
+    sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453
+  );
+}
+
+// 주변 여덟 지점의 값을 부드럽게 섞는다
+float noise3(vec3 p) {
+  vec3 cell = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+
+  float lower = mix(
+    mix(
+      hash31(cell),
+      hash31(cell + vec3(1.0, 0.0, 0.0)),
+      f.x
+    ),
+    mix(
+      hash31(cell + vec3(0.0, 1.0, 0.0)),
+      hash31(cell + vec3(1.0, 1.0, 0.0)),
+      f.x
+    ),
+    f.y
+  );
+
+  float upper = mix(
+    mix(
+      hash31(cell + vec3(0.0, 0.0, 1.0)),
+      hash31(cell + vec3(1.0, 0.0, 1.0)),
+      f.x
+    ),
+    mix(
+      hash31(cell + vec3(0.0, 1.0, 1.0)),
+      hash31(cell + vec3(1.0, 1.0, 1.0)),
+      f.x
+    ),
+    f.y
+  );
+
+  return mix(lower, upper, f.z);
+}
+
+// 잔결 없이 부드러운 꽃 덩어리의 높이를 만든다
+float blossomHeight(vec3 p) {
+  float broad = noise3(p);
+  float softDetail = noise3(p * 1.8 + vec3(5.2, 1.3, 7.1));
+
+  // 큰 형태가 대부분을 차지하고 작은 변화는 조금만 섞는다
+  float h = broad * 0.88 + softDetail * 0.12;
+
+  return smoothstep(0.25, 0.75, h);
+}
+
+// 구 표면에 꽃잎을 성기게 배치한다
+vec3 addPetals(vec3 baseColor, vec3 S) {
+  vec3 result = baseColor;
+
+  // 각 꽃잎마다 고정된 회전 각도
+  const float petalAngles[22] = float[22](
+    0.139626,
+    5.532694,
+    1.605703,
+    3.961897,
+    0.314159,
+    5.934119,
+    1.954769,
+    4.328417,
+    0.575959,
+    5.742133,
+    1.762783,
+    4.502949,
+    0.052360,
+    6.126106,
+    2.164208,
+    4.118977,
+    0.715585,
+    5.846853,
+    2.024582,
+    4.677482,
+    0.453786,
+    5.462881
+  );
+
+  // 행성 전체에 꽃잎 22장: 화면에는 그중 일부만 보인다
+  for (int i = 0; i < 22; i++) {
+    float id = float(i);
+
+    // 꽃잎마다 다른 위치와 크기를 정한다
+    float r1 = hash31(vec3(id, 2.7, 9.1));
+    float r3 = hash31(vec3(id, 5.2, 1.8));
+
+    // 구 전체에 중심점을 분산시킨다
+    float y = 1.0 - 2.0 * (id + 0.5) / 22.0;
+    float angle = id * 2.399963
+        + (r1 - 0.5) * 0.5;
+
+    float ring = sqrt(max(1.0 - y * y, 0.0));
+
+    vec3 center = vec3(
+      ring * cos(angle),
+      y,
+      ring * sin(angle)
+    );
+
+    // 각 꽃잎 중심에서 표면을 따라 가로·세로 방향을 만든다
+    vec3 reference = abs(center.y) > 0.9
+        ? vec3(1.0, 0.0, 0.0)
+        : vec3(0.0, 1.0, 0.0);
+
+    vec3 tangent = normalize(cross(reference, center));
+    vec3 bitangent = cross(center, tangent);
+
+    vec3 delta = S - center;
+    vec2 q = vec2(
+      dot(delta, tangent),
+      dot(delta, bitangent)
+    );
+
+    // 꽃잎마다 서로 다른 고정 방향을 사용한다
+    float rotation = petalAngles[i];
+
+    float c = cos(rotation);
+    float s = sin(rotation);
+
+    q = vec2(
+      c * q.x + s * q.y,
+      -s * q.x + c * q.y
+    );
+
+    // 폭과 길이를 조절해 위쪽이 넓은 꽃잎 모양을 만든다
+    float size = mix(0.8, 1.2, r3);
+    q /= vec2(0.10, 0.17) * size;
+    float width = 0.72 + 0.20 * clamp(q.y, -1.0, 1.0);
+    float outline = length(vec2(q.x / width, q.y));
+
+    // 화면 크기에 맞춰 가장자리를 부드럽게 한다
+    float aa = max(fwidth(outline), 0.025);
+    float petal = 1.0 - smoothstep(
+      1.0 - aa,
+      1.0 + aa,
+      outline
+    );
+
+    // 위 끝부분에 작은 홈을 내 벚꽃 꽃잎의 특징을 준다
+    float notchDistance = length(q - vec2(0.0, 0.98));
+    float notchAA = max(fwidth(notchDistance), 0.015);
+
+    petal *= smoothstep(
+      0.18 - notchAA,
+      0.18 + notchAA,
+      notchDistance
+    );
+
+    // 구 반대편에 같은 무늬가 생기지 않도록 제한한다
+    petal *= step(0.95, dot(S, center));
+
+    // 꽃잎마다 연분홍과 우윳빛 사이의 색을 고른다
+    vec3 petalColor = mix(
+      vec3(0.86, 0.34, 0.52),
+      vec3(0.98, 0.58, 0.72),
+      r1
+    );
+
+    // 가장자리로 갈수록 더 연하게 만든다
+    float edgeFade = smoothstep(0.15, 0.95, outline);
+    petalColor = mix(
+      petalColor,
+      vec3(1.0, 0.92, 0.93),
+      edgeFade * 0.45
+    );
+
+    // 꽃잎 아래쪽에는 분홍색을 조금 더 남긴다
+    float rootTint = 1.0 - smoothstep(-0.8, 0.3, q.y);
+    petalColor = mix(
+      petalColor,
+      vec3(0.94, 0.48, 0.65),
+      rootTint * 0.25
+    );
+
+    // 너무 진하게 찍히지 않도록 꽃잎마다 농도를 약간 다르게 준다
+    float petalOpacity = mix(0.32, 0.48, r3);
+    result = mix(result, petalColor, petal * petalOpacity);
+  }
+
+  return result;
+}
+
+void main() {
+  vec3 S = normalize(vSurf);
+
+  // 작은 얼룩 대신 비교적 큰 덩어리를 만든다
+  // 시간에 따라 아주 천천히 흐르게 한다
+  vec3 p = S * 5.0
+      + vec3(uTime * 0.018, uTime * 0.006, 0.0);
+
+  float height = blossomHeight(p);
+
+  // 꽃 덩어리 사이도 너무 어둡지 않은 분홍색으로 표현한다
+  vec3 betweenPink = vec3(0.92, 0.66, 0.75);
+  vec3 blossomPink = vec3(1.0, 0.82, 0.88);
+  vec3 ivoryPink = vec3(1.0, 0.94, 0.94);
+
+  // 높이에 따라 분홍색과 밝은 색을 섞는다
+  float pinkArea = smoothstep(0.10, 0.45, height);
+  vec3 surfaceColor = mix(
+    betweenPink,
+    blossomPink,
+    pinkArea
+  );
+  float paleArea = smoothstep(0.38, 0.78, height);
+  surfaceColor = mix(
+    surfaceColor,
+    ivoryPink,
+    paleArea
+  );
+
+  // 바탕색 위에 꽃잎 무늬를 얹는다
+  surfaceColor = addPetals(surfaceColor, S);
+
+  // 주변 높이를 비교해 큰 덩어리의 기울기를 구한다
+  float e = 0.025;
+
+  vec3 slope = vec3(
+    blossomHeight(p + vec3(e, 0.0, 0.0))
+      - blossomHeight(p - vec3(e, 0.0, 0.0)),
+
+    blossomHeight(p + vec3(0.0, e, 0.0))
+      - blossomHeight(p - vec3(0.0, e, 0.0)),
+
+    blossomHeight(p + vec3(0.0, 0.0, e))
+      - blossomHeight(p - vec3(0.0, 0.0, e))
+  ) / (2.0 * e);
+
+  // 구 표면을 따라 변하는 기울기만 남긴다
+  vec3 surfaceSlope = slope - S * dot(slope, S);
+
+  // 잔결이 아닌 큰 덩어리에 완만한 요철을 준다
+  float bumpStrength = 0.04;
+  vec3 localNormal = normalize(
+    S - bumpStrength * surfaceSlope
+  );
+
+  // 행성이 회전할 때 요철의 방향도 함께 회전한다
+  vec3 bumpedNormal = normalize(
+    mat3(uModel) * localNormal
+  );
+
+  // 밝은 쪽과 어두운 쪽을 유지한다
+  vec3 L = normalize(vec3(-1.0, 0.3, 0.5));
+  float diff = max(dot(bumpedNormal, L), 0.0);
+
+  vec3 color = surfaceColor * (0.22 + 0.78 * diff);
+  fragColor = vec4(color, 1.0);
+}
+`;
+
+/* ══════════════════════════════════════════════════════════════════════════
+   4. WebGL 준비
+   ══════════════════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2');
+if (!gl) {
+  document.body.innerHTML =
+    '<p style="color:#fff;font:16px sans-serif;padding:2rem">' +
+    'WebGL2 를 사용할 수 없습니다. 최신 Chrome 또는 Edge 로 열어 주세요.</p>';
+  throw new Error('no webgl2');
+}
+
+// 셰이더 문자열을 컴파일한다. 실패하면 오류에 "몇 줄"인지 나온다.
+function compileShader(type, source) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, source);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const kind = (type === gl.VERTEX_SHADER) ? '버텍스' : '프래그먼트';
+    throw new Error(kind + ' 셰이더 오류\n' + gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+// 두 셰이더를 하나의 "프로그램" 으로 묶는다.
+function createProgram(vsSource, fsSource) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compileShader(gl.VERTEX_SHADER, vsSource));
+  gl.attachShader(p, compileShader(gl.FRAGMENT_SHADER, fsSource));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error('링크 오류\n' + gl.getProgramInfoLog(p));
+  }
+  return p;
+}
+
+// 행성마다 프로그램과 uniform 위치를 따로 준비한다
+function preparePlanet(fsSource) {
+  const program = createProgram(VS_SOURCE, fsSource);
+
+  return {
+    program: program,
+    time: gl.getUniformLocation(program, 'uTime'),
+    model: gl.getUniformLocation(program, 'uModel'),
+    viewProj: gl.getUniformLocation(program, 'uViewProj'),
+  };
+}
+
+const iceShader = preparePlanet(FS_ICE_SOURCE);
+const blossomShader = preparePlanet(FS_BLOSSOM_SOURCE);
+const M4 = {};
+
+// 단위행렬: 아무 변환도 하지 않는다
+M4.identity = function () {
+  return new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  ]);
+};
+
+// 이동
+M4.translate = function (tx, ty, tz) {
+  return new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    tx, ty, tz, 1,
+  ]);
+};
+
+// 크기 조절
+M4.scale = function (sx, sy, sz) {
+  return new Float32Array([
+    sx, 0, 0, 0,
+    0, sy, 0, 0,
+    0, 0, sz, 0,
+    0, 0, 0, 1,
+  ]);
+};
+
+// x축 회전 — 각도 단위는 라디안
+M4.rotateX = function (angle) {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+
+  return new Float32Array([
+    1, 0, 0, 0,
+    0, c, s, 0,
+    0, -s, c, 0,
+    0, 0, 0, 1,
+  ]);
+};
+
+// y축 회전
+M4.rotateY = function (angle) {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+
+  return new Float32Array([
+    c, 0, -s, 0,
+    0, 1, 0, 0,
+    s, 0, c, 0,
+    0, 0, 0, 1,
+  ]);
+};
+
+// 행렬 곱: 결과 = a × b
+M4.multiply = function (a, b) {
+  const out = new Float32Array(16);
+
+  for (let col = 0; col < 4; col++) {
+    for (let row = 0; row < 4; row++) {
+      let sum = 0;
+
+      for (let k = 0; k < 4; k++) {
+        sum += a[k * 4 + row] * b[col * 4 + k];
+      }
+
+      out[col * 4 + row] = sum;
+    }
+  }
+
+  return out;
+};
+
+/* ══════════════════════════════════════════════════════════════════════════
+   5. 버퍼를 만들어 GPU 메모리로 보낸다
+   ──────────────────────────────────────────────────────────────────────────
+   VAO(Vertex Array Object) 는 "어떤 버퍼를 몇 번 자리에 어떻게 읽을지"를
+   한 묶음으로 기억해 두는 것입니다. 그려야 할 때 이것만 bind 하면 됩니다.
+   ══════════════════════════════════════════════════════════════════════════ */
+function createMesh(mesh) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  function attribute(data, location, size) {
+    if (!data) return;
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);   // ← CPU 에서 GPU 로 복사
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+  }
+  attribute(mesh.positions, 0, 3);   // location 0 ← aPos
+  attribute(mesh.normals,   1, 3);   // location 1 ← aNormal
+  attribute(mesh.colors,    3, 3);   // location 3 ← aColor
+
+  const ibo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+
+  gl.bindVertexArray(null);
+  return { vao: vao, count: mesh.indices.length };
+}
+
+// 반지름은 유지하고, 구 표면을 더 촘촘하게 나눈다
+const ball = createMesh(makeSphere(0.8, 64, 128, 1.0, 1.0, 1.0));
+
+/* ══════════════════════════════════════════════════════════════════════════
+   6. 매 프레임 그린다
+   ══════════════════════════════════════════════════════════════════════════ */
+const startTime = performance.now();
+
+function render() {
+  // 화면 크기에 맞춰 캔버스 해상도를 조정한다
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.floor(canvas.clientWidth * dpr);
+  const h = Math.floor(canvas.clientHeight * dpr);
+
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+
+  // 가까운 부분이 보이도록 깊이를 비교한다
+  gl.enable(gl.DEPTH_TEST);
+
+  gl.clearColor(0.04, 0.06, 0.10, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  const time = (performance.now() - startTime) / 1000;
+  const aspect = canvas.width / canvas.height;
+
+    // ── 카메라와 투영 변환 ──
+  let camera = M4.identity();
+
+  // 두 행성의 가운데를 정면에서 바라본다
+  camera = M4.multiply(M4.translate(0, 0, -4), camera);
+
+  const perspective = new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, -1 / 4,
+    0, 0, 0, 1,
+  ]);
+
+  camera = M4.multiply(perspective, camera);
+
+  // 창이 좁아져도 두 행성이 화면 안에 들어오게 한다
+  const framing = Math.max(0.60, 1.15 / aspect);
+
+  camera = M4.multiply(
+    M4.scale(
+      1 / (framing * aspect),
+      1 / framing,
+      -1 / 20
+    ),
+    camera
+  );
+
+  const viewProj = camera;
+
+  // ── 행성 하나 그리기 ──
+  function drawPlanet(shader, x, tilt, speed) {
+    gl.useProgram(shader.program);
+
+    gl.uniform1f(shader.time, time);
+    gl.uniformMatrix4fv(shader.viewProj, false, viewProj);
+
+    // 자전 → 기울이기 → 좌우 이동 순서로 적용된다
+    const model = M4.multiply(
+      M4.translate(x, 0, 0),
+      M4.multiply(
+        M4.rotateX(tilt),
+        M4.rotateY(time * speed)
+      )
+    );
+
+    gl.uniformMatrix4fv(shader.model, false, model);
+
+    gl.bindVertexArray(ball.vao);
+    gl.drawElements(
+      gl.TRIANGLES,
+      ball.count,
+      gl.UNSIGNED_SHORT,
+      0
+    );
+  }
+
+  // 왼쪽: 얼음 행성
+  drawPlanet(iceShader, -1.0, 0.25, 0.8);
+
+  // 오른쪽: 벚꽃 구름 행성
+  drawPlanet(blossomShader, 1.0, 0.25, 0.5);
+
+  gl.bindVertexArray(null);
+
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
