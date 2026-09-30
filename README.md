@@ -10,8 +10,8 @@
 
 - [2주차 보고서](week2/week2.md)
 - [Task 1 실행 - 실제 비율](https://yeryoung-jang.github.io/cg-2026-solar/week2/task1.html)
-- [Task 2 실행 — NDC 범위에 맞추기](https://yeryoung-jang.github.io/cg-2026-solar/week2/task2.html)
-- [Task 3 실행 — 보는 사람을 위한 표현](https://yeryoung-jang.github.io/cg-2026-solar/week2/task3.html)
+- [Task 2 실행 - NDC 범위에 맞추기](https://yeryoung-jang.github.io/cg-2026-solar/week2/task2.html)
+- [Task 3 실행 - 보는 사람을 위한 표현](https://yeryoung-jang.github.io/cg-2026-solar/week2/task3.html)
 
 ### 이번주 추가한 것과 막혔던 점
 
@@ -35,11 +35,11 @@ AI는 처음에 Task 3에서 달과 위성의 거리를 모두 줄였다고 설�
 
 <br>
 
-## 3주차 — 그래픽스 파이프라인과 셰이더
+## 3주차 - 그래픽스 파이프라인과 셰이더
 
 - [3주차 보고서](week3/week3.md)
 
-### Task 1 — 공과 바닥 장면 만들기
+### Task 1 - 공과 바닥 장면 만들기
 
 - 바닥 위에 떠서 회전하는 공을 구현했습니다.
 - 이동과 회전의 순서를 바꾸어 공의 움직임을 비교했습니다.

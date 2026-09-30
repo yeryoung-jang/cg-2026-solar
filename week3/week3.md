@@ -1,4 +1,4 @@
-# 3주차 — 그래픽스 파이프라인과 셰이더
+# 3주차 - 그래픽스 파이프라인과 셰이더
 
 - 이름: 장예령
 - 저장소: https://github.com/yeryoung-jang/cg-2026-solar
@@ -60,7 +60,7 @@ const model = M4.multiply(
 - 예측: 먼저 옳긴 위치까지 이동하므로 공 중심이 y축 주위를 움직일 것이다.
 - 관찰: 공이 한자리에 머무르지 않고 바닥 위에서 원을 따라 움직이는 모습을 확인
 
-![회전 × 이동 — 공전](images/task1_orbit.png)
+![회전 × 이동 - 공전](images/task1_orbit.png)
 
 **결과 해석**
 
