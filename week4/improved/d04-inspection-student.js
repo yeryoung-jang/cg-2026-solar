@@ -301,7 +301,7 @@ if (!viewer || !ui) {
     };
 
     status.textContent =
-    ` 현재 관찰: ${comparison.id} — ${comparison.name} · 직교 투영`;
+    ` 현재 관찰: ${comparison.id} — ${comparison.name} · 직교 투영 · 관련 없는 명판/가구/장비 숨김 · 전체 보기에서 복원`;
   }
 
   // ----------------------------------------------------------
