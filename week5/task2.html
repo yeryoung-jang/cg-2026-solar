@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5주차 실습 2 — 격리 행성과 경고 비콘</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f16; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  #hint { position: fixed; left: 12px; bottom: 12px; margin: 0;
+          color: #9fb0c8; font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+<canvas id="glcanvas"></canvas>
+<p id="hint">
+  드래그 = 시점 회전 · 휠 = 확대/축소 ·
+  1 = 파란 조명 ON/OFF · 2 = 붉은 조명 ON/OFF
+</p>
+
+<script>
+/* ============================================================================
+   5주차 실습 2 — 격리된 파란 행성과 붉은 경고 비콘
+   파란 Directional Light + 붉은 Point Light / 각각 1, 2 키로 ON/OFF
+   행성의 희고 옅은 이상 반응은 표면 셰이더에서 부드럽게 표현한다.
+   ============================================================================ */
+'use strict';
+
+/* ══════════════════════════════════════════════════════════════════════════
+   1. 메시 만들기 — 위치 · 법선 · 인덱스
+   ══════════════════════════════════════════════════════════════════════════ */
+
+// 구: 위도 seg 단계 × 경도 seg*2 단계로 잘라 삼각형을 만든다.
+// 구의 법선은 중심에서 표면으로 향하는 방향과 같으므로 위치를 정규화하면 끝난다.
+function makeSphere(seg) {
+  const positions = [], normals = [], indices = [];
+  for (let i = 0; i <= seg; i++) {
+    const phi = Math.PI * i / seg;                 // 0(북극) ~ π(남극)
+    for (let j = 0; j <= seg * 2; j++) {
+      const th = 2 * Math.PI * j / (seg * 2);
+      const x = Math.sin(phi) * Math.cos(th);
+      const y = Math.cos(phi);
+      const z = Math.sin(phi) * Math.sin(th);
+      positions.push(x, y, z);
+      normals.push(x, y, z);                       // 반지름 1 이므로 위치 = 법선
+    }
+  }
+  const W = seg * 2 + 1;
+  for (let i = 0; i < seg; i++) {
+    for (let j = 0; j < seg * 2; j++) {
+      const a = i * W + j, b = a + W;
+      indices.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  return { positions: new Float32Array(positions),
+           normals:   new Float32Array(normals),
+           indices:   new Uint16Array(indices) };
+}
+
+// 파란 행성 전용 — 표면에 작은 요철을 추가
+function makeRoughSphere(seg) {
+  const mesh = makeSphere(seg);
+  const pos = mesh.positions;
+  const normals = mesh.normals;
+
+  // 여러 크기의 요철을 섞어 불규칙한 표면 표현
+  const bump = (x, y, z) =>
+    0.007 * Math.sin(17 * x + 13 * y + 4 * Math.sin(7 * z))
+          * Math.sin(15 * z - 11 * y) +
+    0.004 * Math.sin(29 * y + 8 * z)
+          * Math.sin(25 * x - 9 * z) +
+    0.003 * Math.sin(37 * z + 13 * x)
+          * Math.sin(31 * y - 7 * x);
+
+  const e = 0.001;
+
+  for (let i = 0; i < pos.length; i += 3) {
+    const x = pos[i];
+    const y = pos[i + 1];
+    const z = pos[i + 2];
+
+    // 표면의 반지름을 조금씩 변경
+    const r = 1 + bump(x, y, z);
+    pos[i] = x * r;
+    pos[i + 1] = y * r;
+    pos[i + 2] = z * r;
+
+    // 변경된 표면에 맞춰 법선 방향도 계산
+    const dx = (bump(x + e, y, z) - bump(x - e, y, z)) / (2 * e);
+    const dy = (bump(x, y + e, z) - bump(x, y - e, z)) / (2 * e);
+    const dz = (bump(x, y, z + e) - bump(x, y, z - e)) / (2 * e);
+
+    const radial = dx * x + dy * y + dz * z;
+
+    const nx = x - (dx - radial * x) / r;
+    const ny = y - (dy - radial * y) / r;
+    const nz = z - (dz - radial * z) / r;
+
+    const len = Math.hypot(nx, ny, nz);
+
+    normals[i] = nx / len;
+    normals[i + 1] = ny / len;
+    normals[i + 2] = nz / len;
+  }
+
+  return mesh;
+}
+
+// 바닥: y = 0 평면. 법선은 전부 위쪽 (0,1,0).
+function makePlane(size) {
+  const s = size / 2;
+  return {
+    positions: new Float32Array([-s,0,-s,  s,0,-s,  s,0,s,  -s,0,s]),
+    normals:   new Float32Array([ 0,1,0,   0,1,0,   0,1,0,   0,1,0 ]),
+    indices:   new Uint16Array([0, 1, 2, 0, 2, 3]),
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   2. 버텍스 셰이더
+   ══════════════════════════════════════════════════════════════════════════ */
+const VS_SOURCE = `#version 300 es
+
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+
+uniform mat4 uModel, uView, uProj;
+uniform mat3 uNormalMat;              // 지금은 쓰지 않는다 — ★ 단계 5
+
+out vec3 vWorldPos;                   // 이 픽셀이 세계 어디에 있는가
+out vec3 vNormal;                     // 이 픽셀의 표면이 어디를 향하는가
+out vec3 vLocalPos;                   // 행성 표면 이상 지점의 위치 확인용
+
+void main() {
+  vec4 world = uModel * vec4(aPos, 1.0);
+  vWorldPos  = world.xyz;
+  vLocalPos  = aPos;
+
+  // ★ 단계 5 — 아래 한 줄을  vNormal = uNormalMat * aNormal;  로 바꾼다
+  vNormal = uNormalMat * aNormal;
+
+  gl_Position = uProj * uView * world;
+}
+`;
+
+/* ══════════════════════════════════════════════════════════════════════════
+   3. 프래그먼트 셰이더 — 여기가 이번 주의 주무대입니다
+   ══════════════════════════════════════════════════════════════════════════ */
+const FS_SOURCE = `#version 300 es
+precision highp float;
+
+in vec3 vWorldPos;
+in vec3 vNormal;
+in vec3 vLocalPos;
+
+uniform vec3  uBaseColor;             // 물체 자체의 색 (반사 특성)
+uniform vec3  uLightPos;              // 광원의 세계 좌표
+uniform vec3  uLightColor;
+uniform vec3  uBlueLightColor;  // 파란색 방향광
+uniform vec3  uViewPos;               // 카메라의 세계 좌표
+uniform float uShininess;
+uniform bool  uEmissive;              // 스스로 빛나는 물체인가
+uniform bool  uIsPlanet;              // 흰색 이상 반응을 행성에만 적용
+
+out vec4 fragColor;
+
+void main() {
+  // 붉은 경고 비콘 — 내부에서 빛나는 발광 렌즈 느낌
+  if (uEmissive) {
+    vec3 N = normalize(vNormal);
+    vec3 V = normalize(uViewPos - vWorldPos);
+
+    // 렌즈 전면이 더 밝고, 측면도 너무 어둡지 않게
+    float facing = max(dot(N, V), 0.0);
+
+    // 렌즈 중심부의 내부 발광
+    float innerGlow = pow(facing, 2.2);
+
+    // 렌즈 가장자리의 은은한 붉은 빛
+    float rimGlow = pow(1.0 - facing, 2.0);
+
+    // 작은 핫스팟(렌즈 표면의 반짝임)
+    vec3 fakeLightDir = normalize(vec3(0.35, 0.9, 0.6));
+    vec3 H = normalize(fakeLightDir + V);
+    float hotspot = pow(max(dot(N, H), 0.0), uShininess);
+
+    vec3 base = uBaseColor * (0.78 + 0.55 * innerGlow);
+    vec3 rim  = vec3(1.0, 0.12, 0.10) * rimGlow * 0.22;
+    vec3 hot  = vec3(1.0, 0.72, 0.60) * hotspot * 0.55;
+
+    fragColor = vec4(base + rim + hot, 1.0);
+    return;
+    }
+  
+  vec3 N = normalize(vNormal);                    // 표면이 향하는 방향
+  vec3 L = normalize(uLightPos - vWorldPos);
+  vec3 V = normalize(uViewPos  - vWorldPos);      // 눈 쪽 방향
+
+  // ──────────────────────────────────────────────────────────────────────
+  //  ★ 단계 1~4 — 아래에 세 항을 하나씩 더해 갑니다.
+  //
+  //   단계 1 (확산광)  vec3 diffuse = max(dot(N, L), 0.0) * uBaseColor * uLightColor;
+  //   단계 2 (환경광)  vec3 ambient = 0.08 * uBaseColor;
+  //   단계 3 (정반사)  vec3 R = reflect(-L, N);
+  //                    vec3 specular = pow(max(dot(R, V), 0.0), uShininess) * uLightColor * 0.5;
+  //   단계 4 (감쇠)    float d = length(uLightPos - vWorldPos);
+  //                    float att = 1.0 / (1.0 + 0.02 * d * d);
+  //
+  //  그리고 아래 한 줄을  fragColor = vec4(ambient + (diffuse + specular) * att, 1.0);
+  //  처럼 바꿉니다.
+  // ──────────────────────────────────────────────────────────────────────
+
+  vec3 diffuse = max(dot(N, L), 0.0) * uBaseColor * uLightColor;
+  vec3 ambient = 0.08 * uBaseColor;
+
+  vec3 R = reflect(-L, N);
+
+  float redSpecStrength = uIsPlanet ? 0.02 : 0.10;
+
+  vec3 specular = pow(max(dot(R, V), 0.0), uShininess)
+              * uLightColor * redSpecStrength;
+
+  // 붉은 Point Light 거리 감쇠
+  float d = length(uLightPos - vWorldPos);
+  float att = 1.0 / (1.0 + 0.02 * d * d);
+
+  // 파란 Directional Light
+  vec3 blueL = normalize(vec3(0.4, 0.8, 0.5));
+
+  vec3 blueDiffuse = max(dot(N, blueL), 0.0)
+                 * uBaseColor * uBlueLightColor;
+
+  vec3 blueR = reflect(-blueL, N);
+  
+  float blueSpecStrength = uIsPlanet ? 0.008 : 0.03;
+
+  vec3 blueSpecular = pow(max(dot(blueR, V), 0.0), uShininess)
+                  * uBlueLightColor * blueSpecStrength;
+
+  // 두 광원의 조명 계산 결과 합산
+  vec3 redLight = (diffuse + specular) * att;
+  vec3 blueLight = blueDiffuse + blueSpecular;
+
+  vec3 finalColor = ambient + redLight + blueLight;
+
+  // 행성 표면에 부드럽게 번지는 희고 옅은 푸른색 이상 반응.
+  // 별도 구체를 붙이지 않고 행성 표면 색상만 자연스럽게 섞는다.
+  if (uIsPlanet) {
+    vec3 surface = normalize(vLocalPos);
+    vec3 center = normalize(vec3(0.46, 0.22, 0.86));
+    float dist = length(surface - center);
+    float edgeVariation = 0.015 * sin(surface.x * 27.0 + surface.y * 17.0)
+                        * sin(surface.y * 23.0 - surface.z * 12.0);
+    float halo = 1.0 - smoothstep(0.13, 0.43, dist + edgeVariation);
+    float core = 1.0 - smoothstep(0.035, 0.19, dist + edgeVariation);
+
+    finalColor = mix(finalColor, vec3(0.05, 0.06, 0.09), halo * 0.65);
+    finalColor = mix(finalColor, vec3(0.008, 0.012, 0.022), core * 0.92);
+  }
+
+  fragColor = vec4(finalColor, 1.0);
+}
+`;
+
+/* ══════════════════════════════════════════════════════════════════════════
+   4. 4×4 행렬 도구 (열 우선)
+   ══════════════════════════════════════════════════════════════════════════ */
+const Mat4 = {
+  identity: function () {
+    return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+  },
+  multiply: function (a, b) {                     
+    const o = new Float32Array(16);
+    for (let c = 0; c < 4; c++) {
+      for (let r = 0; r < 4; r++) {
+        let s = 0;
+        for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k];
+        o[c * 4 + r] = s;
+      }
+    }
+    return o;
+  },
+  translate: function (x, y, z) {
+    const m = Mat4.identity(); m[12] = x; m[13] = y; m[14] = z; return m;
+  },
+  scale: function (x, y, z) {
+    const m = Mat4.identity(); m[0] = x; m[5] = y; m[10] = z; return m;
+  },
+  rotateY: function (r) {
+    const m = Mat4.identity(), c = Math.cos(r), s = Math.sin(r);
+    m[0] = c; m[2] = -s; m[8] = s; m[10] = c; return m;
+  },
+  perspective: function (fovy, aspect, near, far) {
+    const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+    return new Float32Array([f / aspect,0,0,0, 0,f,0,0,
+                             0,0,(far + near) * nf,-1, 0,0,2 * far * near * nf,0]);
+  },
+  lookAt: function (eye, center, up) {
+    let zx = eye[0]-center[0], zy = eye[1]-center[1], zz = eye[2]-center[2];
+    const zl = Math.hypot(zx, zy, zz) || 1; zx/=zl; zy/=zl; zz/=zl;
+    let xx = up[1]*zz - up[2]*zy, xy = up[2]*zx - up[0]*zz, xz = up[0]*zy - up[1]*zx;
+    const xl = Math.hypot(xx, xy, xz) || 1; xx/=xl; xy/=xl; xz/=xl;
+    const yx = zy*xz - zz*xy, yy = zz*xx - zx*xz, yz = zx*xy - zy*xx;
+    return new Float32Array([
+      xx,yx,zx,0, xy,yy,zy,0, xz,yz,zz,0,
+      -(xx*eye[0]+xy*eye[1]+xz*eye[2]),
+      -(yx*eye[0]+yy*eye[1]+yz*eye[2]),
+      -(zx*eye[0]+zy*eye[1]+zz*eye[2]), 1]);
+  },
+  // 법선 행렬 = transpose(inverse(model)) 의 좌상단 3×3
+  normalFromMat4: function (m) {
+    const a00=m[0],a01=m[1],a02=m[2], a10=m[4],a11=m[5],a12=m[6],
+          a20=m[8],a21=m[9],a22=m[10];
+    const b01 =  a22*a11 - a12*a21, b11 = -a22*a10 + a12*a20, b21 = a21*a10 - a11*a20;
+    let det = a00*b01 + a01*b11 + a02*b21;
+    if (!det) return new Float32Array([1,0,0, 0,1,0, 0,0,1]);
+    det = 1 / det;
+    return new Float32Array([
+      b01*det, (-a22*a01 + a02*a21)*det, ( a12*a01 - a02*a11)*det,
+      b11*det, ( a22*a00 - a02*a20)*det, (-a12*a00 + a02*a10)*det,
+      b21*det, (-a21*a00 + a01*a20)*det, ( a11*a00 - a01*a10)*det]);
+  },
+};
+
+/* ══════════════════════════════════════════════════════════════════════════
+   5. WebGL 준비
+   ══════════════════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2');
+if (!gl) {
+  document.body.innerHTML =
+    '<p style="color:#fff;font:16px sans-serif;padding:2rem">' +
+    'WebGL2 를 사용할 수 없습니다. 최신 Chrome 또는 Edge 로 열어 주세요.</p>';
+  throw new Error('no webgl2');
+}
+
+function compileShader(type, source) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, source);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const kind = (type === gl.VERTEX_SHADER) ? '버텍스' : '프래그먼트';
+    throw new Error(kind + ' 셰이더 오류\n' + gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+function createProgram(vsSource, fsSource) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compileShader(gl.VERTEX_SHADER, vsSource));
+  gl.attachShader(p, compileShader(gl.FRAGMENT_SHADER, fsSource));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error('링크 오류\n' + gl.getProgramInfoLog(p));
+  }
+  return p;
+}
+const program = createProgram(VS_SOURCE, FS_SOURCE);
+
+const U = {};
+['uModel','uView','uProj','uNormalMat','uBaseColor','uLightPos','uLightColor',
+ 'uViewPos','uShininess','uEmissive','uBlueLightColor','uIsPlanet'].forEach(function (n) {
+  U[n] = gl.getUniformLocation(program, n);
+});
+
+function createMesh(mesh) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  function attribute(data, location, size) {
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+  }
+  attribute(mesh.positions, 0, 3);      // location 0 ← aPos
+  attribute(mesh.normals,   1, 3);      // location 1 ← aNormal
+  const ibo = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  return { vao: vao, count: mesh.indices.length };
+}
+
+const sphere = createMesh(makeSphere(32));
+const roughSphere = createMesh(makeRoughSphere(80));
+const plane  = createMesh(makePlane(16));
+
+gl.enable(gl.DEPTH_TEST);
+
+/* ══════════════════════════════════════════════════════════════════════════
+   6. 마우스로 도는 카메라
+   ══════════════════════════════════════════════════════════════════════════ */
+const cam = { yaw: 0.6, pitch: 0.42, dist: 11 };
+let dragging = false, lastX = 0, lastY = 0;
+
+canvas.addEventListener('pointerdown', function (e) {
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', function (e) {
+  if (!dragging) return;
+  cam.yaw   += (e.clientX - lastX) * 0.008;
+  cam.pitch += (e.clientY - lastY) * 0.006;
+  cam.pitch  = Math.max(-1.3, Math.min(1.4, cam.pitch));
+  lastX = e.clientX; lastY = e.clientY;
+});
+canvas.addEventListener('pointerup', function (e) {
+  dragging = false; canvas.releasePointerCapture(e.pointerId);
+});
+canvas.addEventListener('wheel', function (e) {
+  e.preventDefault();
+  cam.dist = Math.max(3, Math.min(40, cam.dist * (1 + e.deltaY * 0.001)));
+}, { passive: false });
+
+/* ══════════════════════════════════════════════════════════════════════════
+   7. 매 프레임 그린다
+   ══════════════════════════════════════════════════════════════════════════ */
+const startTime = performance.now();
+// 광원 ON/OFF 상태
+let blueLightOn = true;
+let redLightOn = true;
+
+// 키보드로 광원 제어
+window.addEventListener('keydown', function (e) {
+  if (e.repeat) return;
+
+  if (e.key === '1') {
+    blueLightOn = !blueLightOn;
+  }
+
+  if (e.key === '2') {
+    redLightOn = !redLightOn;
+  }
+});
+
+// 물체 하나를 그리는 함수. 모델 행렬과 재질만 바꿔 여러 번 부른다.
+function draw(mesh, model, color, shininess, emissive, isPlanet = false) {
+  gl.uniform1i(U.uIsPlanet, isPlanet ? 1 : 0);
+  gl.uniformMatrix4fv(U.uModel, false, model);
+  gl.uniformMatrix3fv(U.uNormalMat, false, Mat4.normalFromMat4(model));
+  gl.uniform3fv(U.uBaseColor, color);
+  gl.uniform1f(U.uShininess, shininess);
+  gl.uniform1i(U.uEmissive, emissive ? 1 : 0);
+  gl.bindVertexArray(mesh.vao);
+  gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+}
+
+function render() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.floor(canvas.clientWidth * dpr);
+  const h = Math.floor(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  gl.viewport(0, 0, canvas.width, canvas.height);
+
+  gl.clearColor(0.04, 0.06, 0.10, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  const t = (performance.now() - startTime) / 1000;
+  // 경고 비콘 밝기 변화
+  const warningPulse = 0.82 + 0.38 * (0.5 + 0.5 * Math.sin(t * 7.0));
+  const beaconBrightness = redLightOn ? warningPulse : 0.35;
+
+  // 카메라
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  const eye = [Math.sin(cam.yaw) * cp * cam.dist,
+               sp * cam.dist + 1.0,
+               Math.cos(cam.yaw) * cp * cam.dist];
+  const view = Mat4.lookAt(eye, [0, 1.0, 0], [0, 1, 0]);
+  const proj = Mat4.perspective(Math.PI / 4, canvas.width / canvas.height, 0.1, 200);
+
+  // 경고 비콘의 궤도와 동일한 위치에 광원 배치
+  const lightPos = [
+    Math.cos(t * 0.9) * 2.8,
+    1.6,
+    -Math.sin(t * 0.9) * 2.8
+  ];
+
+  gl.useProgram(program);                       // ← uniform 을 넣기 전에 반드시 먼저!
+  gl.uniformMatrix4fv(U.uView, false, view);
+  gl.uniformMatrix4fv(U.uProj, false, proj);
+  gl.uniform3fv(U.uLightPos, lightPos);
+
+  // 붉은 경고 조명 ON/OFF 및 밝기 변화
+  if (redLightOn) {
+    gl.uniform3f(
+      U.uLightColor,
+      2.0 * warningPulse,
+      0.18 * warningPulse,
+      0.14 * warningPulse
+    );
+  } else {
+    gl.uniform3f(U.uLightColor, 0.0, 0.0, 0.0);
+  }
+
+  // 파란 Directional Light ON/OFF
+  if (blueLightOn) {
+    gl.uniform3f(U.uBlueLightColor, 0.25, 0.50, 1.0);
+  } else {
+    gl.uniform3f(U.uBlueLightColor, 0.0, 0.0, 0.0);
+  }
+  gl.uniform3fv(U.uViewPos, eye);
+  
+  // 바닥
+  draw(plane, Mat4.identity(), [0.32, 0.34, 0.40], 8, false);
+
+  // 파란 행성 — 표면의 이상 지점은 셰이더에서 처리
+  let planetBase = Mat4.multiply(
+    Mat4.translate(0, 1.6, 0),
+    Mat4.rotateY(t * 0.5)
+  );
+  let m = Mat4.multiply(planetBase, Mat4.scale(1.3, 1.3, 1.3));
+  draw(roughSphere, m, [0.45, 0.65, 0.95], 10, false, true);
+
+  // 경고 비콘 — 기존 Point Light와 같은 궤도로 공전
+  let beaconBase = Mat4.multiply(
+    Mat4.translate(0, 1.6, 0),
+    Mat4.rotateY(t * 0.9)
+  );
+  beaconBase = Mat4.multiply(beaconBase, Mat4.translate(2.8, 0, 0));
+
+  let beacon = Mat4.multiply(
+    beaconBase,
+    Mat4.scale(0.28, 0.28, 0.28)
+  );
+  draw(
+    sphere,
+    beacon,
+    [0.95 * beaconBrightness, 0.16 * beaconBrightness, 0.13 * beaconBrightness],
+    64,
+    true
+  );
+  
+
+  gl.bindVertexArray(null);
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
