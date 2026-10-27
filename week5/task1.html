@@ -214,10 +214,15 @@ const Mat4 = {
     let det = a00*b01 + a01*b11 + a02*b21;
     if (!det) return new Float32Array([1,0,0, 0,1,0, 0,0,1]);
     det = 1 / det;
-    return new Float32Array([
-      b01*det, (-a22*a01 + a02*a21)*det, ( a12*a01 - a02*a11)*det,
-      b11*det, ( a22*a00 - a02*a20)*det, (-a12*a00 + a02*a10)*det,
-      b21*det, (-a21*a00 + a01*a20)*det, ( a11*a00 - a01*a10)*det]);
+    
+  return new Float32Array([
+    b01*det, b11*det, b21*det,
+    (-a22*a01 + a02*a21)*det,
+    (a22*a00 - a02*a20)*det,
+    (-a21*a00 + a01*a20)*det,
+    (a12*a01 - a02*a11)*det,
+    (-a12*a00 + a02*a10)*det,
+    (a11*a00 - a01*a10)*det]);
   },
 };
 

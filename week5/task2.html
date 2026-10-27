@@ -243,7 +243,7 @@ void main() {
 
   vec3 finalColor = ambient + redLight + blueLight;
 
-  // 행성 표면에 부드럽게 번지는 희고 옅은 푸른색 이상 반응.
+  // 행성 표면에 검은 이상 지점을 표현
   // 별도 구체를 붙이지 않고 행성 표면 색상만 자연스럽게 섞는다.
   if (uIsPlanet) {
     vec3 surface = normalize(vLocalPos);
