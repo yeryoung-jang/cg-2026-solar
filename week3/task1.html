@@ -155,7 +155,7 @@ void main() {
   // 물체가 회전하면 표면이 향하는 방향도 함께 회전한다
   vNormal = mat3(uModel) * aNormal;
 
-  // gl_Position 에 넣는 값이 그 정점의 최종 위치(NDC)입니다.
+  // gl_Position 에 넣는 값이 그 정점의 최종 위치(NDC)
   // 물체 배치 → 카메라와 투영 변환
   gl_Position = uViewProj * uModel * vec4(aPos, 1.0);
 }
