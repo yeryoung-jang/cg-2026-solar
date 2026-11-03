@@ -21,7 +21,7 @@ fragColor = vec4(uBaseColor, 1.0);
 
 ![시작 화면](images/step0_start.png)
 
-### 2. Diffuse - 확산관
+### 2. Diffuse - 확산광
 
 표면의 법선 벡터 `N`과 광원을 향하는 벡터 `L`의 내적을 이용하여 확산광을 계산했습니다.
 
