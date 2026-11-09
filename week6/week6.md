@@ -2,7 +2,7 @@
 
 - 이름: 장예령
 - 저장소: https://github.com/yeryoung-jang/cg-2026-solar
-- 실행: [Task 1](https://yeryoung-jang.github.io/cg-2026-solar/week6/task1.html) · [Task 2](https://yeryoung-jang.github.io/cg-2026-solar/week6/task2.html)
+- 실행: [Task 1](https://yeryoung-jang.github.io/cg-2026-solar/week6/week06-material-starter/task1.html) · [Task 2](https://yeryoung-jang.github.io/cg-2026-solar/week6/week06-material-starter/task2.html)
 
 <br>
 
