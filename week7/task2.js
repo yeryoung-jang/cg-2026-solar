@@ -24,8 +24,25 @@
   // PC/노트북 구분은 브라우저가 보장하지 않으므로 저장한 기기별 설정이나 간단한 벤치마크를 활용할 수 있다.
   function chooseInitialProfile(){
     const mobile=navigator.userAgentData?.mobile || matchMedia('(pointer:coarse)').matches;
-    return mobile?{name:'모바일 기본값',resolution:'320',samples:'4',bounces:'1',advanced:false}
-                 :{name:'데스크톱 기본값',resolution:'640',samples:'8',bounces:'2',advanced:true};
+
+    // Path Tracing 실측 중앙값(ms)
+    // 노트북: 640=13.18, 960=28.42
+    // 스마트폰: 640=5.00, 960=7.00
+    const measured=mobile
+      ? {'640':5.00,'960':7.00}
+      : {'640':13.18,'960':28.42};
+
+    // 약 60FPS에 해당하는 프레임 시간 기준
+    const targetMs=16.7;
+    const resolution=measured['960']<=targetMs?'960':'640';
+
+    return {
+      name:mobile?'스마트폰 실측 권장값':'노트북 실측 권장값',
+      resolution:resolution,
+      samples:'8',
+      bounces:'2',
+      advanced:true
+    };
   }
   const initialProfile=chooseInitialProfile();
   for(const id of ['resolution','samples','bounces']){
